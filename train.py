@@ -16,25 +16,34 @@ from sklearn.metrics import f1_score
 # Device Configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
+def rename_labels(df, possible_labels):
+    label_dict = {}
+    for idx, possible_label in enumerate(possible_labels):
+        label_dict[possible_label] = idx
+    return label_dict, df["label"].replace(label_dict)
+
+
 # Load data
 df = pd.read_csv("data/preprocessed_data.csv")
 
 # Rename class to label and classes to indexes
 possible_labels = df["label"].unique()
 
-label_dict = {}
-for idx, possible_label in enumerate(possible_labels):
-    label_dict[possible_label] = idx
+# label_dict = {}
+# for idx, possible_label in enumerate(possible_labels):
+#    label_dict[possible_label] = idx
+# df["label"] = df["label"].replace(label_dict)
 
-df["label"] = df["label"].replace(label_dict)
+label_dict, df["label"] = rename_labels(df, possible_labels)
 
 BERT_MODEL = "TurkuNLP/bert-base-finnish-cased-v1"
 
 # Hyper parameters
-NUM_EPOCHS = 2
-MAX_LENGTH = 256
-BATCH_SIZE = 16
-LEARNING_RATE = 1e-5
+NUM_EPOCHS = 4
+MAX_LENGTH = 512
+BATCH_SIZE = 8
+LEARNING_RATE = 5e-5
 EPSILON = 1e-8
 SEED_VAL = 17
 
@@ -92,6 +101,7 @@ dataset_val = TensorDataset(input_ids_val, attention_mask_val, labels_val)
 
 # Load Model
 print("Loading BERT model")
+print("")
 model = BertForSequenceClassification.from_pretrained(
     BERT_MODEL,
     num_labels=len(label_dict),
@@ -199,6 +209,7 @@ training_stats = []
 
 for epoch in tqdm(range(1, NUM_EPOCHS + 1)):
     model.train()
+    lowest_val_los = 0
     train_total_loss = 0
 
     progress_bar = tqdm(
@@ -232,6 +243,10 @@ for epoch in tqdm(range(1, NUM_EPOCHS + 1)):
     train_avg_loss = train_total_loss / len(dataloader_train)
     val_avg_loss, predictions, true_vals = evaluate(dataloader_val)
     val_f1 = f1_score_fn(predictions, true_vals)
+
+    if val_avg_loss <= lowest_val_los:
+        lowest_val_los = val_avg_loss
+        torch.save(model.state_dict(), f"model/finetuned_finBERT_best.model")
 
     tqdm.write(f"\nEpoch: {epoch}")
     tqdm.write(f"Training loss: {train_avg_loss}")
@@ -278,9 +293,33 @@ model.to(device)
 print("")
 
 model.load_state_dict(
-    torch.load(
-        "model/finetuned_finBERT_epoch_2.model", map_location=torch.device("cpu")
-    )
+    torch.load("model/finetuned_finBERT_best.model", map_location=torch.device("cpu"))
+)
+
+
+test_df = pd.read_csv("data/test.csv")
+
+_, test_df["label"] = rename_labels(test_df, possible_labels)
+
+encoded_data_test = tokenizer.batch_encode_plus(
+    test_df.text.values,
+    add_special_tokens=True,
+    return_attention_mask=True,
+    padding="max_length",
+    truncation=True,
+    max_length=MAX_LENGTH,
+    return_tensors="pt",
+)
+
+input_ids_test = encoded_data_test["input_ids"]
+attention_mask_test = encoded_data_test["attention_mask"]
+labels_test = torch.tensor(test_df.label.values)
+
+
+dataset_test = TensorDataset(input_ids_test, attention_mask_test, labels_test)
+
+dataloader_test = DataLoader(
+    dataset_test, sampler=SequentialSampler(dataset_test), batch_size=BATCH_SIZE
 )
 
 # Test on validation data
@@ -290,3 +329,5 @@ acc_per_class(predictions, true_vals)
 
 # Test with test data
 print("Testing model with test data")
+_, predictions, true_vals = evaluate(dataloader_test)
+acc_per_class(predictions, true_vals)
