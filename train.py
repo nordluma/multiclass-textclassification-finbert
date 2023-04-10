@@ -18,6 +18,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def rename_labels(df, possible_labels):
+    """Rename labels to the index of the label"""
     label_dict = {}
     for idx, possible_label in enumerate(possible_labels):
         label_dict[possible_label] = idx
@@ -30,11 +31,6 @@ df = pd.read_csv("data/preprocessed_data.csv")
 # Rename class to label and classes to indexes
 possible_labels = df["label"].unique()
 
-# label_dict = {}
-# for idx, possible_label in enumerate(possible_labels):
-#    label_dict[possible_label] = idx
-# df["label"] = df["label"].replace(label_dict)
-
 label_dict, df["label"] = rename_labels(df, possible_labels)
 
 BERT_MODEL = "TurkuNLP/bert-base-finnish-cased-v1"
@@ -43,7 +39,7 @@ BERT_MODEL = "TurkuNLP/bert-base-finnish-cased-v1"
 NUM_EPOCHS = 4
 MAX_LENGTH = 512
 BATCH_SIZE = 8
-LEARNING_RATE = 5e-5
+LEARNING_RATE = 1e-5
 EPSILON = 1e-8
 SEED_VAL = 17
 
@@ -91,7 +87,6 @@ input_ids_train = encoded_data_train["input_ids"]
 attention_mask_train = encoded_data_train["attention_mask"]
 labels_train = torch.tensor(df[df.data_type == "train"].label.values)
 
-
 input_ids_val = encoded_data_val["input_ids"]
 attention_mask_val = encoded_data_val["attention_mask"]
 labels_val = torch.tensor(df[df.data_type == "val"].label.values)
@@ -102,16 +97,16 @@ dataset_val = TensorDataset(input_ids_val, attention_mask_val, labels_val)
 # Load Model
 print("Loading BERT model")
 print("")
+
 model = BertForSequenceClassification.from_pretrained(
     BERT_MODEL,
     num_labels=len(label_dict),
     output_attentions=False,
     output_hidden_states=False,
 )
+model = model.to(device)
 
 print("")
-
-model = model.to(device)
 
 dataloader_train = DataLoader(
     dataset_train, sampler=RandomSampler(dataset_train), batch_size=BATCH_SIZE
@@ -123,7 +118,6 @@ dataloader_val = DataLoader(
 
 # Optimizer and scheduler
 optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, eps=EPSILON)
-
 TOTAL_STEPS = len(dataloader_train) * NUM_EPOCHS
 
 scheduler = get_linear_schedule_with_warmup(
@@ -139,13 +133,9 @@ def f1_score_fn(preds, labels):
     return f1_score(labels_flat, preds_flat, average="weighted")
 
 
-def flat_acc(preds, labels):
-    preds_flat = np.argmax(preds, axis=1).flatten()
-    labels_flat = labels.flatten()
-    return np.sum(preds_flat == labels_flat) / labels_flat
-
-
 def acc_per_class(preds, labels):
+    """Calculate the amount of positive classification and
+    total classifications for each label"""
     label_dict_inverse = {v: k for k, v in label_dict.items()}
     preds_flat = np.argmax(preds, axis=1).flatten()
     labels_flat = labels.flatten()
@@ -167,9 +157,9 @@ torch.cuda.manual_seed_all(SEED_VAL)
 
 
 def evaluate(dataloader_val):
+    """Evaluate the performance of the model"""
     model.eval()
     val_total_loss = 0
-    # val_total_acc = 0
     predictions, true_vals = [], []
 
     for batch in dataloader_val:
@@ -193,9 +183,7 @@ def evaluate(dataloader_val):
 
         predictions.append(logits)
         true_vals.append(label_ids)
-        # val_total_acc += flat_acc(predictions, label_ids)
 
-    # val_avg_acc = val_total_acc / len(dataloader_val)
     val_avg_loss = val_total_loss / len(dataloader_val)
 
     predictions = np.concatenate(predictions, axis=0)
@@ -205,11 +193,13 @@ def evaluate(dataloader_val):
 
 
 print("Starting training loop")
+
+# =========Training loop=========
 training_stats = []
+lowest_val_los = np.inf
 
 for epoch in tqdm(range(1, NUM_EPOCHS + 1)):
     model.train()
-    lowest_val_los = 0
     train_total_loss = 0
 
     progress_bar = tqdm(
@@ -326,6 +316,8 @@ dataloader_test = DataLoader(
 print("Testing model with validation data")
 _, predictions, true_vals = evaluate(dataloader_val)
 acc_per_class(predictions, true_vals)
+
+print("")
 
 # Test with test data
 print("Testing model with test data")
